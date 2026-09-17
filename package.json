@@ -1,0 +1,24 @@
+{
+  "name": "tribe-jev-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "demo": "node --env-file=.env --import tsx src/cli.ts examples/lead.json",
+    "demo:live": "node --env-file=.env --import tsx src/demo-server.ts",
+    "apply": "node --env-file=.env --import tsx src/cli.ts examples/lead.json --apply"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

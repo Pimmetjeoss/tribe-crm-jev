@@ -1,0 +1,13 @@
+{
+  "sourceId": "demo-email-001",
+  "receivedAt": "2026-09-17T10:30:00+02:00",
+  "message": "Hallo, ik ben Noor de Vries van Studio Kompas. We zoeken voor volgende maand een CRM-integratie voor ons team van 18 mensen. Kunnen jullie deze week bellen en een offerte sturen? Je bereikt me via noor@studiokompas.example of +31 6 12345678.",
+  "person": {
+    "firstName": "Noor",
+    "middleName": "de",
+    "lastName": "Vries"
+  },
+  "organization": {
+    "name": "Studio Kompas"
+  }
+}

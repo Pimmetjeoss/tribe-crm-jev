@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="16 live Jev-oordelen voor Tribe CRM in één TypeSafe API-call.">
+    <title>Tribe × Jev Live Intake</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">TypeSafe System One × Tribe CRM</p>
+          <h1>Zie Jev een lead begrijpen terwijl je typt.</h1>
+          <p class="intro">16 getypeerde CRM-oordelen. Eén API-call per tekstwijziging. Geen writes naar Tribe.</p>
+        </div>
+        <div id="status" class="status waiting"><span></span>verbinden…</div>
+      </header>
+
+      <div id="notice" class="notice hidden"></div>
+
+      <section class="workspace">
+        <aside class="composer">
+          <label for="leadText">Typ een bericht</label>
+          <textarea id="leadText" spellcheck="false" maxlength="2000">Hallo, ik ben Noor de Vries van Studio Kompas. We zoeken volgende maand een CRM-integratie voor 18 medewerkers. Kunnen jullie deze week bellen en een offerte sturen?</textarea>
+          <div class="presets" aria-label="Voorbeeldteksten">
+            <button data-preset="Hallo, ik ben Noor de Vries van Studio Kompas. We zoeken volgende maand een CRM-integratie voor 18 medewerkers. Kunnen jullie deze week bellen en een offerte sturen?">Warme lead</button>
+            <button data-preset="Sinds gisteren kan ik niet meer inloggen in ons bestaande account. Kunnen jullie support vragen mij vandaag terug te bellen?">Support</button>
+            <button data-preset="Wij leveren duurzame kantoorartikelen en zoeken verkooppartners in Nederland. Interesse in een kennismaking?">Leverancier</button>
+            <button data-preset="Hoi, kunnen we eens praten?">Ambigu</button>
+          </div>
+          <div class="privacy"><strong>Veilige demo</strong><br>Je TypeSafe-key blijft op de server. Deze pagina bevat bewust geen Tribe-write endpoint.</div>
+        </aside>
+        <section id="results" class="results" aria-live="polite"></section>
+      </section>
+
+      <footer>
+        <span id="model">model …</span>
+        <span id="usage">tokens …</span>
+        <span id="budget">demo budget …</span>
+      </footer>
+    </main>
+  </body>
+</html>
