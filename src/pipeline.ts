@@ -8,6 +8,7 @@ export interface TribeGateway {
   readonly writesEnabled: boolean;
   findCandidates(input: LeadInput, facts: ExtractedFacts): Promise<TribeCandidate[]>;
   opportunityPhases(): Promise<OpportunityPhase[]>;
+  callPhases(): Promise<OpportunityPhase[]>;
   apply(action: PlannedAction): Promise<unknown>;
   organizationIdentityRelationId(): Promise<string>;
   createContactLink(parentOrganizationId: string, personId: string, importId: string): Promise<CreatedEntity>;
@@ -18,7 +19,10 @@ export interface TribeGateway {
     contactRelationshipId: string;
     phaseId: string;
     importId: string;
+    noteContent: string;
+    noteImportId: string;
   }): Promise<CreatedEntity>;
+  createCall(input: { subject: string; startDate: string; endDate: string; description: string; phaseId: string; importId: string }): Promise<CreatedEntity>;
 }
 
 interface PipelineOptions {
@@ -30,9 +34,19 @@ interface PipelineOptions {
 export async function processLead(input: LeadInput, options: PipelineOptions): Promise<PipelineResult> {
   validateInput(input);
   const facts = extractFacts(input.message);
-  const candidates = options.tribe ? await options.tribe.findCandidates(input, facts) : [];
-  const decisions = await options.decisionEngine.decide(input, facts, candidates);
-  let actions = planActions(input, facts, candidates, decisions);
+  let candidates = options.tribe ? await options.tribe.findCandidates(input, facts) : [];
+  let decisions = await options.decisionEngine.decide(input, facts, candidates);
+  const resolvedInput = mergeInferredIdentity(input, decisions);
+  if (options.tribe && resolvedInput !== input) {
+    const refreshedCandidates = await options.tribe.findCandidates(resolvedInput, facts);
+    if (candidateKeys(refreshedCandidates) !== candidateKeys(candidates)) {
+      candidates = refreshedCandidates;
+      decisions = await options.decisionEngine.decide(resolvedInput, facts, candidates);
+    } else {
+      candidates = refreshedCandidates;
+    }
+  }
+  let actions = planActions(resolvedInput, facts, candidates, decisions);
   if (options.tribe && actions.some((action) => action.type === "suggest_opportunity")) {
     const phase = (await options.tribe.opportunityPhases()).find((item) => item.code === "Qualification");
     if (phase) {
@@ -41,17 +55,22 @@ export async function processLead(input: LeadInput, options: PipelineOptions): P
         : action);
     }
   }
+  if (options.tribe && actions.some((action) => action.type === "suggest_call")) {
+    const phase = (await options.tribe.callPhases()).find((item) => item.code === "Planned");
+    if (phase) actions = actions.map((action) => action.type === "suggest_call" ? { ...action, phase } : action);
+  }
   const shouldApply = options.apply === true;
   const applied: PipelineResult["applied"] = [];
 
   if (shouldApply) {
     if (!options.tribe) throw new Error("Cannot apply without Tribe credentials.");
     if (!options.tribe.writesEnabled) throw new Error("Cannot apply while TRIBE_ENABLE_WRITES is false.");
-    applied.push(...await applyActions(input, actions, options.tribe));
+    applied.push(...await applyActions(resolvedInput, decisions, actions, options.tribe));
   }
 
   return {
     mode: shouldApply ? "applied" : "dry-run",
+    resolvedInput,
     facts,
     candidates,
     decisions,
@@ -60,8 +79,38 @@ export async function processLead(input: LeadInput, options: PipelineOptions): P
   };
 }
 
+function mergeInferredIdentity(input: LeadInput, decisions: JevDecisions): LeadInput {
+  let changed = false;
+  let person = input.person;
+  let organization = input.organization;
+  if (!person?.lastName && decisions.extractedPersonName) {
+    person = splitPersonName(decisions.extractedPersonName);
+    changed = true;
+  }
+  if (!organization?.name && decisions.extractedOrganizationName) {
+    organization = { name: decisions.extractedOrganizationName };
+    changed = true;
+  }
+  return changed ? { ...input, ...(person ? { person } : {}), ...(organization ? { organization } : {}) } : input;
+}
+
+function splitPersonName(name: string): NonNullable<LeadInput["person"]> {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return { lastName: parts[0]! };
+  return {
+    firstName: parts[0]!,
+    ...(parts.length > 2 ? { middleName: parts.slice(1, -1).join(" ") } : {}),
+    lastName: parts.at(-1)!,
+  };
+}
+
+function candidateKeys(candidates: TribeCandidate[]): string {
+  return candidates.map((candidate) => `${candidate.entitySet}:${candidate.id}`).sort().join("|");
+}
+
 async function applyActions(
   input: LeadInput,
+  decisions: JevDecisions,
   actions: PlannedAction[],
   tribe: TribeGateway,
 ): Promise<PipelineResult["applied"]> {
@@ -119,6 +168,8 @@ async function applyActions(
         contactRelationshipId: contactRelationship.ID,
         phaseId: opportunityAction.phase.id,
         importId: opportunityAction.importId,
+        noteContent: opportunityAction.noteContent,
+        noteImportId: sourceImportId(input.sourceId, "opportunity_note"),
       });
       applied.push({ action: opportunityAction, result: opportunity });
     } else {
@@ -132,7 +183,40 @@ async function applyActions(
     }
   }
 
+  const callAction = actions.find((action) => action.type === "suggest_call");
+  if (callAction?.type === "suggest_call") {
+    if (callAction.phase?.id) {
+      const call = await tribe.createCall({
+        subject: callAction.subject,
+        startDate: callAction.startDate,
+        endDate: callAction.endDate,
+        description: callAction.description,
+        phaseId: callAction.phase.id,
+        importId: callAction.importId,
+      });
+      applied.push({ action: callAction, result: call });
+    } else {
+      applied.push({ action: callAction, result: { skipped: true, reason: "The Planned call phase is required." } });
+    }
+  }
+
   return applied;
+}
+
+function crmNote(input: LeadInput, decisions: JevDecisions): string {
+  const person = [input.person?.firstName, input.person?.middleName, input.person?.lastName].filter(Boolean).join(" ") || "niet herkend";
+  const organization = input.organization?.name ?? "niet herkend";
+  return [
+    "Origineel bronbericht",
+    input.message.trim(),
+    "",
+    "Jev-uitkomsten",
+    `Persoon: ${person}`,
+    `Organisatie: ${organization}`,
+    `Intentie: ${decisions.intent} (${Math.round(decisions.intentConfidence * 100)}% confidence)`,
+    `Opportunity: ${Math.round(decisions.shouldCreateOpportunity * 100)}% kans`,
+    `Urgentie: ${decisions.urgencyScore.toFixed(1)}/3 (${Math.round(decisions.urgencyConfidence * 100)}% confidence)`,
+  ].join("\n");
 }
 
 function opportunitySubject(input: LeadInput): string {
@@ -149,11 +233,17 @@ export function planActions(
   decisions: JevDecisions,
 ): PlannedAction[] {
   const actions: PlannedAction[] = [];
-  const matchedPerson = candidates.find((candidate) => candidate.id === decisions.matchingPersonCandidateId);
-  const matchedOrganization = candidates.find((candidate) => candidate.id === decisions.matchingOrganizationCandidateId);
+  const deterministicPerson = deterministicIdentityMatch(candidates, "Relation_Person", input);
+  const deterministicOrganization = deterministicIdentityMatch(candidates, "Relation_Organization", input);
+  const matchedPerson = decisions.hasPerson >= 0.8
+    ? deterministicPerson ?? candidates.find((candidate) => candidate.id === decisions.matchingPersonCandidateId)
+    : undefined;
+  const matchedOrganization = decisions.hasOrganization >= 0.8
+    ? deterministicOrganization ?? candidates.find((candidate) => candidate.id === decisions.matchingOrganizationCandidateId)
+    : undefined;
 
-  if (matchedPerson && decisions.matchingPersonCandidateConfidence >= 0.9) {
-    actions.push({ type: "link_existing", entitySet: matchedPerson.entitySet, id: matchedPerson.id });
+  if (matchedPerson && (deterministicPerson || decisions.matchingPersonCandidateConfidence >= 0.9)) {
+    actions.push({ type: "link_existing", entitySet: matchedPerson.entitySet, id: matchedPerson.id, displayName: matchedPerson.displayName, matchedOn: matchedPerson.matchedOn });
   } else if (matchedPerson) {
     actions.push({ type: "review", reason: "Jev found a possible duplicate, but its match confidence is below the initial 0.90 safety threshold." });
   } else if (decisions.hasPerson >= 0.8) {
@@ -170,6 +260,7 @@ export function planActions(
           EmailAddress: facts.emails[0],
           PhoneNumber: facts.phoneNumbers[0],
           ImportId: sourceImportId(input.sourceId, "person"),
+          Notes: [{ Content: crmNote(input, decisions), ImportId: sourceImportId(input.sourceId, "person_note"), IsPinned: true }],
         }),
       });
     }
@@ -177,8 +268,8 @@ export function planActions(
     actions.push({ type: "review", reason: "A person may be present, but the evidence does not meet the initial 0.80 threshold." });
   }
 
-  if (matchedOrganization && decisions.matchingOrganizationCandidateConfidence >= 0.9) {
-    actions.push({ type: "link_existing", entitySet: matchedOrganization.entitySet, id: matchedOrganization.id });
+  if (matchedOrganization && (deterministicOrganization || decisions.matchingOrganizationCandidateConfidence >= 0.9)) {
+    actions.push({ type: "link_existing", entitySet: matchedOrganization.entitySet, id: matchedOrganization.id, displayName: matchedOrganization.displayName, matchedOn: matchedOrganization.matchedOn });
   } else if (matchedOrganization) {
     actions.push({ type: "review", reason: "Jev found a possible organization duplicate, but its match confidence is below the initial 0.90 safety threshold." });
   } else if (decisions.hasOrganization >= 0.8) {
@@ -194,6 +285,7 @@ export function planActions(
           PhoneNumber: facts.phoneNumbers[0],
           Website: input.organization?.website?.trim() ?? facts.urls[0],
           ImportId: sourceImportId(input.sourceId, "organization"),
+          Notes: [{ Content: crmNote(input, decisions), ImportId: sourceImportId(input.sourceId, "organization_note"), IsPinned: true }],
         }),
       });
     }
@@ -228,10 +320,61 @@ export function planActions(
       type: "suggest_opportunity",
       reason: "Jev found high-confidence sales intent and concrete commercial interest. Creating the tenant-specific relationship and opportunity remains a reviewed pilot action.",
       importId: sourceImportId(input.sourceId, "opportunity"),
+      noteContent: crmNote(input, decisions),
     });
   }
 
+
+  if ((decisions.shouldCreateCall ?? 0) >= 0.8 && (decisions.callDayConfidence ?? 0) >= 0.6) {
+    const start = resolveCallDate(decisions.callDay ?? "none", input.receivedAt);
+    if (start) {
+      const end = new Date(start.getTime() + 30 * 60 * 1000);
+      const party = [input.person?.firstName, input.person?.middleName, input.person?.lastName].filter(Boolean).join(" ") || input.organization?.name || "onbekende relatie";
+      actions.push({
+        type: "suggest_call",
+        reason: "Jev found an explicit request to schedule a phone call and identified its day.",
+        importId: sourceImportId(input.sourceId, "call"),
+        subject: `Belafspraak - ${party}`,
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        description: crmNote(input, decisions),
+      });
+    }
+  }
+
   return actions;
+}
+
+function deterministicIdentityMatch(candidates: TribeCandidate[], entitySet: TribeCandidate["entitySet"], input: LeadInput): TribeCandidate | undefined {
+  const strong = candidates.filter((candidate) => candidate.entitySet === entitySet && candidate.matchedOn?.some((item) => item === "importId" || item === "email" || item === "phone" || item === "website"));
+  if (strong.length !== 1) return undefined;
+  const candidate = strong[0]!;
+  const expectedName = entitySet === "Relation_Person"
+    ? [input.person?.firstName, input.person?.middleName, input.person?.lastName].filter(Boolean).join(" ")
+    : input.organization?.name ?? "";
+  if (!expectedName) return undefined;
+  const expected = normalizeIdentityName(expectedName);
+  const actual = normalizeIdentityName(candidate.displayName);
+  return actual.includes(expected) || expected.includes(actual) ? candidate : undefined;
+}
+
+function normalizeIdentityName(value: string): string {
+  return value.normalize("NFKD").replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+}
+
+export function resolveCallDate(day: NonNullable<JevDecisions["callDay"]>, receivedAt?: string): Date | undefined {
+  if (day === "none") return undefined;
+  const date = receivedAt ? new Date(receivedAt) : new Date();
+  if (Number.isNaN(date.getTime())) return undefined;
+  date.setHours(9, 0, 0, 0);
+  if (day === "tomorrow") date.setDate(date.getDate() + 1);
+  else if (day === "day_after") date.setDate(date.getDate() + 2);
+  else if (day !== "today") {
+    const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+    const target = weekdays.indexOf(day);
+    date.setDate(date.getDate() + ((target - date.getDay() + 7) % 7));
+  }
+  return date;
 }
 
 function compact(value: Record<string, unknown>): Record<string, unknown> {

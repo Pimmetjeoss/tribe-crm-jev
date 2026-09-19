@@ -21,6 +21,8 @@ interface RelationRow {
   Name?: string;
   EmailAddress?: string;
   Website?: string;
+  PhoneNumber?: string;
+  MobilePhoneNumber?: string;
 }
 
 export interface OpportunityPhase {
@@ -35,6 +37,7 @@ export interface CreatedEntity {
   _Name?: string;
   ImportId?: string;
   deduplicated?: boolean;
+  Notes?: Array<{ ID: string; Content?: string; ImportId?: string }>;
 }
 
 export class TribeClient {
@@ -65,6 +68,21 @@ export class TribeClient {
       ...(row.Code ? { code: row.Code } : {}),
       ...(row._Name ? { name: row._Name } : {}),
     }));
+  }
+
+  async callPhases(): Promise<OpportunityPhase[]> {
+    const rows = await this.list<{ ID: string; Code?: string; _Name?: string }>("Datastore_Phase_ActivityCall", undefined, "ID,Code,_Name", 100);
+    return rows.map((row) => ({ id: row.ID, ...(row.Code ? { code: row.Code } : {}), ...(row._Name ? { name: row._Name } : {}) }));
+  }
+
+  async createCall(input: { subject: string; startDate: string; endDate: string; description: string; phaseId: string; importId: string }): Promise<CreatedEntity> {
+    return this.createOnce("Activity_Call", input.importId, {
+      Subject: input.subject,
+      StartDate: input.startDate,
+      EndDate: input.endDate,
+      Description: input.description,
+      Phase: { ID: input.phaseId },
+    });
   }
 
   async organizationIdentityRelationId(): Promise<string> {
@@ -103,13 +121,31 @@ export class TribeClient {
     contactRelationshipId: string;
     phaseId: string;
     importId: string;
+    noteContent: string;
+    noteImportId: string;
   }): Promise<CreatedEntity> {
     return this.createOnce("Activity_SalesOpportunity", input.importId, {
       Subject: input.subject,
       Relationship: { ID: input.relationshipId },
       Contact: { ID: input.contactRelationshipId },
       Phase: { ID: input.phaseId },
+      Notes: [{ Content: input.noteContent, ImportId: input.noteImportId, IsPinned: true }],
     });
+  }
+
+  async findOpportunityByImportId(importId: string): Promise<CreatedEntity[]> {
+    return this.findByImportIdWithNotes("Activity_SalesOpportunity", importId);
+  }
+
+  async findByImportIdWithNotes(entitySet: string, importId: string): Promise<CreatedEntity[]> {
+    const params = new URLSearchParams({
+      "$filter": `contains(ImportId,'${escapeODataString(importId)}')`,
+      "$select": "ID,_Type,_Name,ImportId",
+      "$expand": "Notes($select=ID,Content,ImportId)",
+      "$top": "10",
+    });
+    const response = await this.request<ODataList<CreatedEntity>>(`/v1/odata/${entitySet}?${params}`);
+    return response.value.filter((entity) => entity.ImportId === importId);
   }
 
   async updateSalesOpportunityContact(opportunityId: string, contactRelationshipId: string): Promise<CreatedEntity> {
@@ -160,6 +196,7 @@ export class TribeClient {
         id: entity.ID,
         entitySet: "Relation_Person",
         displayName: entity._Name ?? entity.ID,
+        matchedOn: ["importId"],
       };
       byId.set(`${candidate.entitySet}:${candidate.id}`, candidate);
     }
@@ -168,6 +205,7 @@ export class TribeClient {
         id: entity.ID,
         entitySet: "Relation_Organization",
         displayName: entity._Name ?? entity.ID,
+        matchedOn: ["importId"],
       };
       byId.set(`${candidate.entitySet}:${candidate.id}`, candidate);
     }
@@ -175,28 +213,48 @@ export class TribeClient {
     const firstName = input.person?.firstName?.trim();
     const organizationName = input.organization?.name?.trim();
     const searches: Array<Promise<{ entitySet: TribeCandidate["entitySet"]; rows: RelationRow[] }>> = [];
+    const personSelect = "ID,_Name,FirstName,LastName,EmailAddress,PhoneNumber,MobilePhoneNumber";
+    const organizationSelect = "ID,_Name,Name,EmailAddress,PhoneNumber,Website";
 
     if (lastName || firstName) {
       const field = lastName ? "LastName" : "FirstName";
       const value = lastName ?? firstName ?? "";
       searches.push(
-        this.list<RelationRow>("Relation_Person", `contains(${field},'${escapeODataString(value)}')`, "ID,_Name,FirstName,LastName,EmailAddress,PhoneNumber")
+        this.list<RelationRow>("Relation_Person", `contains(${field},'${escapeODataString(value)}')`, personSelect)
           .then((rows) => ({ entitySet: "Relation_Person" as const, rows })),
       );
     }
     if (organizationName) {
       searches.push(
-        this.list<RelationRow>("Relation_Organization", `contains(Name,'${escapeODataString(organizationName)}')`, "ID,_Name,Name,EmailAddress,PhoneNumber,Website")
+        this.list<RelationRow>("Relation_Organization", `contains(Name,'${escapeODataString(organizationName)}')`, organizationSelect)
           .then((rows) => ({ entitySet: "Relation_Organization" as const, rows })),
       );
+    }
+    for (const email of facts.emails) {
+      const filter = `contains(EmailAddress,'${escapeODataString(email)}')`;
+      searches.push(this.list<RelationRow>("Relation_Person", filter, personSelect, 25).then((rows) => ({ entitySet: "Relation_Person" as const, rows })));
+      searches.push(this.list<RelationRow>("Relation_Organization", filter, organizationSelect, 25).then((rows) => ({ entitySet: "Relation_Organization" as const, rows })));
+    }
+    for (const phone of facts.phoneNumbers) {
+      const needle = phone.replace(/\D/g, "").slice(-4);
+      if (!needle) continue;
+      searches.push(this.list<RelationRow>("Relation_Person", `contains(PhoneNumber,'${needle}')`, personSelect, 50).then((rows) => ({ entitySet: "Relation_Person" as const, rows })));
+      searches.push(this.list<RelationRow>("Relation_Person", `contains(MobilePhoneNumber,'${needle}')`, personSelect, 50).then((rows) => ({ entitySet: "Relation_Person" as const, rows })));
+      searches.push(this.list<RelationRow>("Relation_Organization", `contains(PhoneNumber,'${needle}')`, organizationSelect, 50).then((rows) => ({ entitySet: "Relation_Organization" as const, rows })));
+    }
+    for (const url of facts.urls) {
+      const host = normalizeHost(url);
+      if (host) searches.push(this.list<RelationRow>("Relation_Organization", `contains(Website,'${escapeODataString(host)}')`, organizationSelect, 25).then((rows) => ({ entitySet: "Relation_Organization" as const, rows })));
     }
 
     for (const search of await Promise.all(searches)) {
       for (const row of search.rows) {
         const candidate = toCandidate(row, search.entitySet);
-        if (isPotentialCandidate(candidate, input, facts)) {
-          byId.set(`${candidate.entitySet}:${candidate.id}`, candidate);
-        }
+        const matchedOn = matchingEvidence(candidate, input, facts);
+        if (matchedOn.length === 0) continue;
+        const key = `${candidate.entitySet}:${candidate.id}`;
+        const existing = byId.get(key);
+        byId.set(key, existing ? { ...existing, ...candidate, matchedOn: [...new Set([...(existing.matchedOn ?? []), ...matchedOn])] } : { ...candidate, matchedOn });
       }
     }
     return [...byId.values()];
@@ -303,17 +361,34 @@ function toCandidate(row: RelationRow, entitySet: TribeCandidate["entitySet"]): 
     displayName,
     ...(row.EmailAddress ? { emailAddress: row.EmailAddress } : {}),
     ...(row.Website ? { website: row.Website } : {}),
+    ...([row.PhoneNumber, row.MobilePhoneNumber].filter((value): value is string => Boolean(value)).length
+      ? { phoneNumbers: [row.PhoneNumber, row.MobilePhoneNumber].filter((value): value is string => Boolean(value)) }
+      : {}),
   };
 }
 
-function isPotentialCandidate(candidate: TribeCandidate, input: LeadInput, facts: ExtractedFacts): boolean {
-  if (candidate.emailAddress && facts.emails.includes(candidate.emailAddress.toLowerCase())) return true;
+function matchingEvidence(candidate: TribeCandidate, input: LeadInput, facts: ExtractedFacts): NonNullable<TribeCandidate["matchedOn"]> {
+  const evidence: NonNullable<TribeCandidate["matchedOn"]> = [];
+  if (candidate.emailAddress && facts.emails.includes(candidate.emailAddress.toLowerCase())) evidence.push("email");
+  if ((candidate.phoneNumbers ?? []).some((phone) => facts.phoneNumbers.some((fact) => normalizePhone(phone) === normalizePhone(fact)))) evidence.push("phone");
 
   const expectedName = candidate.entitySet === "Relation_Person"
     ? [input.person?.firstName, input.person?.middleName, input.person?.lastName].filter(Boolean).join(" ")
     : input.organization?.name ?? "";
 
-  return expectedName.length > 0 && normalizeName(candidate.displayName) === normalizeName(expectedName);
+  if (expectedName.length > 0 && normalizeName(candidate.displayName) === normalizeName(expectedName)) evidence.push("name");
+  if (candidate.entitySet === "Relation_Organization" && candidate.website && facts.urls.some((url) => normalizeHost(candidate.website!) === normalizeHost(url))) evidence.push("website");
+  return evidence;
+}
+
+function normalizePhone(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  return digits.length >= 9 ? digits.slice(-9) : digits;
+}
+
+function normalizeHost(value: string): string {
+  try { return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`).hostname.replace(/^www\./i, "").toLowerCase(); }
+  catch { return value.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split("/")[0]!.toLowerCase(); }
 }
 
 function normalizeName(value: string): string {

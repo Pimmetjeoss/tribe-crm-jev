@@ -8,3 +8,8 @@ test("extractFacts returns unique normalized source values", () => {
   assert.deepEqual(facts.phoneNumbers, ["+31 6 12345678"]);
   assert.deepEqual(facts.urls, ["https://example.com/demo"]);
 });
+
+test("extractFacts recognizes a bare domain without mistaking an email domain for a second URL", () => {
+  const facts = extractFacts("Contact Alex via alex@example.com of bekijk portal.voorbeeld.test. Bel 0600000000.");
+  assert.deepEqual(facts.urls, ["https://portal.voorbeeld.test"]);
+});

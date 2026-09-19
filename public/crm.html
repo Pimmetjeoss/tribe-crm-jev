@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Veilig testen en verifiëren wat de lead-intake in Tribe CRM schrijft.">
+    <title>Tribe CRM verificatie</title>
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/crm.css">
+    <script src="/crm.js" defer></script>
+  </head>
+  <body>
+    <main class="shell dashboard-shell">
+      <header class="hero compact-hero">
+        <div>
+          <a class="back-link" href="/">← Live Jev-demo</a>
+          <p class="eyebrow">Tribe CRM · testconsole</p>
+          <h1>Van invoer tot CRM-record.</h1>
+          <p class="intro">Bekijk eerst het write-plan, schrijf de testinvoer naar Tribe en lees daarna alleen de relevante records terug.</p>
+        </div>
+        <div id="systemStatus" class="status waiting"><span></span>configuratie laden…</div>
+      </header>
+
+      <div id="crmNotice" class="notice hidden"></div>
+
+      <section class="health-strip" aria-label="Systeemstatus">
+        <div><span>Tribe API</span><strong id="tribeConfig">—</strong></div>
+        <div><span>TypeSafe</span><strong id="typeSafeConfig">—</strong></div>
+        <div><span>Writes</span><strong id="writeConfig">—</strong></div>
+        <button id="connectButton" class="secondary">Test verbinding</button>
+      </section>
+
+      <section class="dashboard-grid">
+        <form id="leadForm" class="panel input-panel">
+          <div class="panel-heading"><span>01</span><div><h2>Alleen een bericht</h2><p id="sourceLabel">Jev haalt de CRM-gegevens zelf uit de tekst.</p></div></div>
+          <label>Bericht<textarea id="message" required>Hallo, ik ben Mila Proefveld van Studio Vonk Testlab. We zoeken een CRM-integratie voor 18 medewerkers. Kunnen jullie deze week bellen en een offerte sturen? Je bereikt me via mila+crmtest@studiovonk.example of +31 6 12345678.</textarea></label>
+          <div class="button-row">
+            <button id="dryRunButton" class="primary" type="submit">Maak dry-run</button>
+            <button id="verifyButton" class="secondary" type="button">Lees CRM terug</button>
+          </div>
+          <div id="writeGate" class="write-gate">
+            <button id="applyButton" class="danger" type="button" disabled>Schrijf naar Tribe</button>
+            <small>Dit voert de getoonde acties direct uit in de geconfigureerde Tribe-omgeving.</small>
+          </div>
+        </form>
+
+        <section class="panel output-panel">
+          <div class="panel-heading"><span>02</span><div><h2>Run & resultaat</h2><p id="runMeta">Nog geen test uitgevoerd.</p></div></div>
+          <div class="summary-cards">
+            <div><span>Modus</span><strong id="modeValue">—</strong></div>
+            <div><span>Acties</span><strong id="actionCount">0</strong></div>
+            <div><span>CRM gevonden</span><strong id="foundCount">0 / 5</strong></div>
+          </div>
+          <h3 class="section-title">Door Jev herkend</h3>
+          <div id="extracted" class="extracted-grid"><div><span>Persoon</span><strong>—</strong></div><div><span>Organisatie</span><strong>—</strong></div><div><span>E-mail</span><strong>—</strong></div><div><span>Telefoon</span><strong>—</strong></div></div>
+          <h3 class="section-title">Write-plan</h3>
+          <div id="actions" class="empty-state">Voer een dry-run uit om de exacte payloads te zien.</div>
+          <h3 class="section-title">Teruggelezen uit Tribe</h3>
+          <div id="records" class="record-list"></div>
+          <details class="raw-output"><summary>Ruwe JSON</summary><pre id="rawJson">—</pre></details>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>
